@@ -1,0 +1,285 @@
+from tqdm import tqdm
+import requests
+import platform
+import os
+import subprocess
+import time
+import re
+import json
+
+session = requests.session()
+
+
+# 1
+QR_CODE = 'QRCode.jpg'
+
+qr_header = {
+    'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_13_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/63.0.3239.132 Safari/537.36',
+}
+
+status_header = {
+'Accept':'*/*',
+'Accept-Encoding':'gzip, deflate, br',
+'Accept-Language':'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_13_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/63.0.3239.132 Safari/537.36',
+}
+
+# 获取二维码状态地址
+status_fetcher_url = 'https://www.dianping.com/account/ajax/queryqrcodestatus'
+
+# 报名链接
+url = "http://s.dianping.com/ajax/json/activity/offline/saveApplyInfo"
+
+# 一个单独的未登录状态爬虫，防止刷页面被封禁
+spider_session = requests.session()
+spider_url = 'http://m.dianping.com/activity/static/pc/list'
+pre_callback = 'jQuery112405054301475677674'
+
+
+# 获取二维码图片, 成功扫描二维码后将返回信令
+def fetch_qr_code():
+    qr_code_data = session.get('https://www.dianping.com/account/getqrcodeimg', headers=qr_header, stream=True)
+
+    with open(QR_CODE, 'wb') as f:
+        f.write(qr_code_data.content)
+    # 打开图片
+    if platform.system() == 'Darwin':
+        subprocess.call(['open', QR_CODE])
+    elif platform.system() == 'Linux':
+        subprocess.call(['xdg-open', QR_CODE])
+    else:
+        os.startfile(QR_CODE)
+    # get the ticket
+    token = session.cookies.__getitem__('lgtoken')
+    # 当前登录二维码 print('ticket got: ', token)
+    return token
+
+#获取二维码状态
+def fetch_qr_status(token):
+    status_payload = {'lgtoken': token}
+    sucess = False
+    while True:
+        r = session.post(status_fetcher_url, headers=status_header, data=status_payload)
+        dic = r.json()
+        if dic['code'] != 200:
+            continue
+        status = dic['msg']['status']
+        # 0 no scan, 1 scan, 2 scaned
+        if status == -1:
+            print('验证码过期')
+            break
+        elif status == 0:
+            print('请使用大众点评APP扫描二维码……')
+            time.sleep(1)
+        elif status == 1:
+            print('已经成功扫描二维码，请在手机点击确认登录')
+            time.sleep(1)
+        elif status == 2:
+            print('成功登录')
+            # 目的是拿到浏览器cookies
+            print(r.cookies)
+            a = str(r.cookies)
+            if a.find('dper=') != -1:
+                start = a.find('dper=')
+            if a.find(' for .dianping.com/>, <Cookie ll') != -1:
+                end = a.find(' for .dianping.com/>, <Cookie ll')
+            ck = a[start+5:end]
+            sucess = True
+            print(ck)
+            break
+    return ck
+
+def regiss(ck):
+    orgin_url = "http://s.dianping.com/event/"
+
+    cookies = {
+        "Hm_lvt_e6f449471d3527d58c46e24efb4c343e": "1566351229",
+        "_lxsdk": "1690f12eac6c8-03da912800bdba-57b1a3f-1fa400-1690f12eac6c8",
+        "_hc.v": "c3187453-4e39-e2a2-ed28-2ea42c8763d1.1550736092",
+        "ctu": "2e9074b65124b76c90609476ac1dc3a69274858003099c2d471f6083492d94c8",
+        "cye": "chengdu",
+        "dper": ck,
+        "ll": "7fd06e815b796be3df069dec7836c3df",
+        "ua": "%E5%91%A8%E5%A4%A7%E5%A4%A7",
+        "uamo": "13141350678",
+        "cy": "8",
+        "locallat": "39.8836559",
+        "locallng": "116.4735119",
+        "s_ViewType": "10",
+        "pvhistory": "6L+U5ZuePjo8L2dldGxvY2FsY2l0eWlkP2xhdD0zOS44ODM2NTU5JmxuZz0xMTYuNDczNTExOSZjb29yZFR5cGU9MSZjYWxsYmFjaz1XaGVyZUFtSTExNTUwNzM1NDIxNjgyPjo8MTU1MDczNTQyMjI4MV1fWw==",
+        "_lxsdk_cuid": "1690f12eac6c8-03da912800bdba-57b1a3f-1fa400-1690f12eac6c8",
+        "_lx_utm": "utm_source%3Ddp_pc_event",
+        "_lxsdk_s": "16cc70ac969-a59-b8-e09%7C%7C24",
+        "_lxsdk_test": ""
+    }
+
+    headers = {
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Referer": "http://s.dianping.com/event/chengdu",
+        "Origin": "http://s.dianping.com",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/76.0.3809.100 Safari/537.36",
+        "Content-Type": "application/json",
+    }
+
+    ids = []
+    activityTitles = []
+    data = {"cityId": "8", "type": 0, "mode": "", "page": 1}
+    for page in range(1, 10):
+        data["page"] = str(page)
+        response = requests.post("http://m.dianping.com/activity/static/pc/ajaxList", headers=headers, cookies=cookies,
+                                 data=str(json.dumps(data)))
+        # print(page)
+        for item in response.json()["data"]["detail"]:
+            activityTitles.append(item["activityTitle"])
+            ids.append(item["offlineActivityId"])
+    # print(activityTitles)
+    print("搜索到" + str(len(ids)) + "条霸王餐")
+
+    cookies = {
+        "_lxsdk_cuid": "167b542ff3f5b-0c703e059f7432-35647600-13c680-167b542ff40c8",
+        "_lxsdk": "167b542ff3f5b-0c703e059f7432-35647600-13c680-167b542ff40c8",
+        "_hc.v": "0ed79a07-8dbb-4a7c-739b-ba1bcd181616.1544934326",
+        "ctu": "ebcf67266e9b22aca41709463bf938278bb0a47763266e266f070a3c93fd5055",
+        "cye": "lianyuangang",
+        "dper": ck,
+        "ll": "7fd06e815b796be3df069dec7836c3df",
+        "ua": "HelloWorld_9933",
+        "uamo": "13141350678",
+        "cy": "2",
+        "locallat": "39.8836559",
+        "locallng": "116.4735119",
+        "geoType": "wgs84",
+        "pvhistory": "6L+U5ZuePjo8L2dldGxvY2FsY2l0eWlkP2xhdD0zOS44ODM2NTU5JmxuZz0xMTYuNDczNTExOSZjb29yZFR5cGU9MSZjYWxsYmFjaz1XaGVyZUFtSTExNTUwNzM1NDIxNjgyPjo8MTU1MDczNTQyMjI4MV1fWw==",
+        "m_flash2": "1",
+        "_lx_utm": "utm_source%3Ddp_pc_group",
+        "_lxsdk_s": "1690efe229c-e39-9ee-86f%7C%7C41",
+    }
+
+    headers = {
+        "Origin": "http://s.dianping.com",
+        "Accept-Encoding": "gzip, deflate",
+        "X-Request": "JSON",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/76.0.3809.100 Safari/537.36",
+        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8;",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Accept": "application/json, text/javascript",
+        "Referer": "http://s.dianping.com/event/919828178",
+        "X-Requested-With": "XMLHttpRequest",
+        "Connection": "keep-alive",
+        # "Content-Length":"224",
+        "Host": "s.dianping.com",
+    }
+
+    data = {
+        "offlineActivityId": "885343990",
+        "phoneNo": "157****5076",
+        "shippingAddress": "",
+        "extraCount": "",
+        "birthdayStr": "",
+        "email": "",
+        "marryDayStr": "",
+        "babyBirths": "",
+        "pregnant": "",
+        "marryStatus": "0",
+        "comboId": "",
+        "branchId": "",
+        "usePassCard": "0",
+        "passCardNo": "",
+        "isShareSina": "false",
+        "isShareQQ": "false"
+    }
+    MarryData = {
+        "offlineActivityId": "885343990",
+        "phoneNo": "157****5076",
+        "shippingAddress": "",
+        "extraCount": "",
+        "birthdayStr": "",
+        "email": "",
+        "marryDayStr": "2019-10-01",
+        "babyBirths": "",
+        "pregnant": "",
+        "marryStatus": "0",
+        "comboId": "",
+        "branchId": "",
+        "usePassCard": "0",
+        "passCardNo": "",
+        "isShareSina": "false",
+        "isShareQQ": "false"
+    }
+    success = []
+    for _id in tqdm(ids):
+        text = requests.get(orgin_url + str(_id), headers=headers, cookies=cookies).text
+        shopid = re.search(r"shopid:[0-9]*", text).group()  # 一个就够
+        shopid = shopid.split("shopid:")[1]
+        data["offlineActivityId"] = str(_id)
+        data["branchId"] = shopid
+        response = requests.post("http://s.dianping.com/ajax/json/activity/offline/saveApplyInfo", headers=headers,
+                                 cookies=cookies, data=data)
+
+        msg = json.loads(response.text)
+        if msg["msg"]["html"].find('报名成功') != -1:
+            print(activityTitles[ids.index(_id)] + " 报名成功")
+            success.append(activityTitles[ids.index(_id)])
+            continue
+        if activityTitles[ids.index(_id)].find('婚') != -1:
+            response = requests.post("http://s.dianping.com/ajax/json/activity/offline/saveApplyInfo", headers=headers,
+                                     cookies=cookies, data=MarryData)
+            msg = json.loads(response.text)
+            if msg["msg"]["html"].find('报名成功') != -1:
+                print(activityTitles[ids.index(_id)] + "婚纱报名成功")
+                success.append(activityTitles[ids.index(_id)])
+                continue
+            else:
+                print('婚纱报名失败' + msg["msg"]["html"])
+        if activityTitles[ids.index(_id)].find('纱') != -1:
+            response = requests.post("http://s.dianping.com/ajax/json/activity/offline/saveApplyInfo", headers=headers,
+                                     cookies=cookies, data=MarryData)
+            msg = json.loads(response.text)
+            if msg["msg"]["html"].find('报名成功') != -1:
+                print(activityTitles[ids.index(_id)] + "婚纱报名成功")
+                success.append(activityTitles[ids.index(_id)])
+                continue
+            else:
+                print('婚纱报名失败' + msg["msg"]["html"])
+        else:
+            if msg["msg"]["html"] == '已经报过名了，不要重复报名':
+                a = '不要重复报名'
+                print(activityTitles[ids.index(_id)] + '》》》》》》' + a)
+            # print(activityTitles[ids.index(_id)]+" 登记失败")
+            else:
+                print(activityTitles[ids.index(_id)] + '》》》》》》' + msg["msg"]["html"])
+    print("成功登记活动：")
+    for i in success:
+        print(i)
+
+if __name__ == '__main__':
+    print('     第一次执行未加载二维码无法扫码登录,请退出重新打开本工具扫码报名,确认请输入1,眼瞎随便按')
+    flag = input()
+    if flag != '1':
+        print('see you lala~~')
+        try:
+            os._exit(0)
+        except:
+            print('Program is dead.')
+
+    print('                                 欢欢妹 wechat：18428311772')
+
+
+    # 登录验证
+    while True:
+        lgtoken = fetch_qr_code()
+        success = fetch_qr_status(lgtoken)
+        # if success:
+        #     break
+        regis = regiss(success)
+        print('操作完毕,一分钟后自动退出~')
+        # 循环操作,图个方便休息一分钟退出,不严谨
+        time.sleep(60)
+        try:
+            os._exit(0)
+        except:
+            print('Program is dead.')
+
+
+
